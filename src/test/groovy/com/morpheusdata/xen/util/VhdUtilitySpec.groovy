@@ -46,6 +46,34 @@ class VhdUtilitySpec extends Specification {
 		thrown(IOException)
 	}
 
+	def "extractVhdDiskSize reads header value for fixed disk type"() {
+		given:
+		byte[] vhdBytes = new byte[512]
+		putLong(vhdBytes, 40, 1024L)
+		putInt(vhdBytes, 60, 2) // fixed disk type
+		TarArchiveInputStream tarStream = buildTarStream('disk.vhd', vhdBytes)
+
+		when:
+		long size = VhdUtility.extractVhdDiskSize(tarStream)
+
+		then:
+		size == 1024L
+	}
+
+	def "extractVhdDiskSize handles invalid disk type gracefully"() {
+		given:
+		byte[] vhdBytes = new byte[512]
+		putLong(vhdBytes, 40, 2048L)
+		putInt(vhdBytes, 60, 99) // invalid disk type
+		TarArchiveInputStream tarStream = buildTarStream('disk.vhd', vhdBytes, 4096L)
+
+		when:
+		long size = VhdUtility.extractVhdDiskSize(tarStream)
+
+		then:
+		size == 4096L // falls back to tar entry size
+	}
+
 	private static TarArchiveInputStream buildTarStream(String name, byte[] data, long entrySize = -1L) {
 		ByteArrayOutputStream baos = new ByteArrayOutputStream()
 		TarArchiveOutputStream tarOutput = new TarArchiveOutputStream(baos)

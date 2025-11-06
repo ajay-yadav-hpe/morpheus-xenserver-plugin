@@ -70,4 +70,24 @@ class VirtualImageDatasetProviderSpec extends TestSpecBase {
 		provider.item(1L).name == 'ImageA'
 		provider.fetchItem('1').name == 'ImageA'
 	}
+
+	def "fetch item returns null when parsing fails"() {
+		expect:
+		provider.fetchItem('not-a-number') == null
+		provider.fetchItem(null) == null
+	}
+
+	def "item metadata helpers expose name and id"() {
+		given:
+		VirtualImage image = new VirtualImage(id: 9L, name: 'Xen Template')
+
+		expect:
+		provider.itemName(image) == 'Xen Template'
+		provider.itemValue(image) == 9L
+	}
+
+	def "image types collected from provision providers"() {
+		expect:
+		provider.imageTypes == ['xen']
+	}
 }

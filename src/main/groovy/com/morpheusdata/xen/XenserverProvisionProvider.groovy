@@ -19,6 +19,8 @@ import com.morpheusdata.response.ImportWorkloadResponse
 import com.morpheusdata.response.PrepareWorkloadResponse
 import com.morpheusdata.response.ProvisionResponse
 import com.morpheusdata.response.ServiceResponse
+import com.morpheusdata.xen.util.DefaultPollingStrategy
+import com.morpheusdata.xen.util.PollingStrategy
 import com.morpheusdata.xen.util.XenComputeUtility
 import com.xensource.xenapi.SR
 import com.xensource.xenapi.VM
@@ -33,11 +35,21 @@ class XenserverProvisionProvider extends AbstractProvisionProvider implements Wo
 
 	protected MorpheusContext context
 	protected XenserverPlugin plugin
+	protected PollingStrategy pollingStrategy
 
 	public XenserverProvisionProvider(XenserverPlugin plugin, MorpheusContext context) {
 		super()
 		this.@context = context
 		this.@plugin = plugin
+		this.pollingStrategy = new DefaultPollingStrategy()
+	}
+
+	/**
+	 * Set the polling strategy (primarily for testing)
+	 * @param strategy The polling strategy to use
+	 */
+	void setPollingStrategy(PollingStrategy strategy) {
+		this.pollingStrategy = strategy
 	}
 
 	/**
@@ -1639,87 +1651,101 @@ class XenserverProvisionProvider extends AbstractProvisionProvider implements Wo
 	}
 
 	def checkServerShutdown(Map authConfig, ComputeServer server) {
-		def rtn = [success:false]
+		def rtn = [success: false]
 		try {
-			def pending = true
-			def attempts = 0
-			while(pending) {
-				sleep(1000l * 5l)
-				def serverDetail
-				try {
-					serverDetail = getServerDetail([authConfig: authConfig, externalId: server.externalId])
-				} catch(ex) {
-					log.warn('An error occurred trying to get VM Details while waiting for server to be shutdown. This could be because the vm is not yet ready and can safely be ignored. ' +
-						'We will automatically retry. Any detailed exceptions will be logged at debug level.')
-					log.debug("Errors from get server detail: ${ex.message}", ex)
-				}
-				if(serverDetail?.success == true && serverDetail?.vmRecord && [com.xensource.xenapi.Types.VmPowerState.SUSPENDED, com.xensource.xenapi.Types.VmPowerState.HALTED, com.xensource.xenapi.Types.VmPowerState.PAUSED].contains(serverDetail?.vmRecord?.powerState)) {
-					rtn.success = true
-					pending = false
-				}
-				attempts ++
-				if(attempts > 300) {
-					pending = false
-				}
-			}
+			def timeoutMillis = 300 * 5 * 1000 // 25 minutes (300 attempts * 5 seconds)
+			def intervalMillis = 5000 // 5 seconds
+
+			// Define the shutdown states
+			def shutdownStates = [
+				com.xensource.xenapi.Types.VmPowerState.SUSPENDED,
+				com.xensource.xenapi.Types.VmPowerState.HALTED,
+				com.xensource.xenapi.Types.VmPowerState.PAUSED
+			]
+
+			// Use polling strategy to wait for server shutdown
+			def isShutdown = pollingStrategy.pollUntil(
+				// Condition: Check if VM is in shutdown state
+				{
+					try {
+						def serverDetail = getServerDetail([authConfig: authConfig, externalId: server.externalId])
+						return serverDetail?.success == true &&
+							   serverDetail?.vmRecord &&
+							   shutdownStates.contains(serverDetail?.vmRecord?.powerState)
+					} catch(ex) {
+						log.warn('An error occurred trying to get VM Details while waiting for server to be shutdown. This could be because the vm is not yet ready and can safely be ignored. ' +
+							'We will automatically retry. Any detailed exceptions will be logged at debug level.')
+						log.debug("Errors from get server detail: ${ex.message}", ex)
+						return false
+					}
+				},
+				timeoutMillis,
+				intervalMillis
+			)
+
+			rtn.success = isShutdown
 		} catch(e) {
-			log.error("An Exception in checkServerShutdown: ${e.message}",e)
+			log.error("An Exception in checkServerShutdown: ${e.message}", e)
 		}
 		return rtn
 	}
 
 	def checkServerReady(opts) {
-		def rtn = [success:false]
+		def rtn = [success: false]
 		try {
-			def pending = true
-			def attempts = 0
-			while(pending) {
-				sleep(1000l * 5l)
-				def serverDetail
-				try {
-					serverDetail = getServerDetail(opts)
-				} catch(ex) {
-					log.warn('An error occurred trying to get VM Details while waiting for server to be ready. This could be because the vm is not yet ready and can safely be ignored. ' +
-							'We will automatically retry. Any detailed exceptions will be logged at debug level.')
-					log.debug("Errors from get server detail: ${ex.message}", ex)
-				}
-				// log.debug("serverDetail: ${serverDetail}")
-				if(serverDetail?.success == true && serverDetail?.vmRecord && serverDetail?.ipAddress) {
-					if(serverDetail.ipAddress) {
-						rtn.success = true
-						rtn.ipAddress = serverDetail.ipAddress
-						if(serverDetail.vmNetworks) {
-							rtn.ipAddresses = [:]
-							serverDetail.vmNetworks.each {key, value ->
-								def keyInfo = key.tokenize('/')
-								def interfaceName = "eth${keyInfo[0]}"
-								rtn.ipAddresses[interfaceName] = rtn.ipAddresses[interfaceName] ?: [:]
-								if(keyInfo[1] == 'ipv4') {
-									rtn.ipAddresses[interfaceName].ipAddress = value
-									if(interfaceName == 'eth0') {
-										rtn.ipAddress = value
-									}
-								} else if(keyInfo[1] == 'ipv6') { //ipv6
-									rtn.ipAddresses[interfaceName].ipv6Address = value
-								}
+			def timeoutMillis = 300 * 5 * 1000 // 25 minutes (300 attempts * 5 seconds)
+			def intervalMillis = 5000 // 5 seconds
+
+			// Use polling strategy to wait for server to be ready
+			def serverDetail = pollingStrategy.pollForResult(
+				// Operation: Get server details
+				{
+					try {
+						return getServerDetail(opts)
+					} catch(ex) {
+						log.warn('An error occurred trying to get VM Details while waiting for server to be ready. This could be because the vm is not yet ready and can safely be ignored. ' +
+								'We will automatically retry. Any detailed exceptions will be logged at debug level.')
+						log.debug("Errors from get server detail: ${ex.message}", ex)
+						return null
+					}
+				},
+				// Success condition: Has IP address and VM record
+				{ detail ->
+					detail?.success == true && detail?.vmRecord && detail?.ipAddress
+				},
+				timeoutMillis,
+				intervalMillis
+			)
+
+			// Process successful result
+			if (serverDetail?.success == true && serverDetail?.vmRecord && serverDetail?.ipAddress) {
+				rtn.success = true
+				rtn.ipAddress = serverDetail.ipAddress
+				if (serverDetail.vmNetworks) {
+					rtn.ipAddresses = [:]
+					serverDetail.vmNetworks.each { key, value ->
+						def keyInfo = key.tokenize('/')
+						def interfaceName = "eth${keyInfo[0]}"
+						rtn.ipAddresses[interfaceName] = rtn.ipAddresses[interfaceName] ?: [:]
+						if (keyInfo[1] == 'ipv4') {
+							rtn.ipAddresses[interfaceName].ipAddress = value
+							if (interfaceName == 'eth0') {
+								rtn.ipAddress = value
 							}
+						} else if (keyInfo[1] == 'ipv6') { //ipv6
+							rtn.ipAddresses[interfaceName].ipv6Address = value
 						}
-						rtn.vmRecord = serverDetail.vmRecord
-						rtn.vm = serverDetail.vm
-						rtn.vmId = serverDetail.vmId
-						rtn.vmDetails = serverDetail.vmDetails
-						rtn.volumes = serverDetail.volumes
-						rtn.networks = serverDetail.networks
-						pending = false
 					}
 				}
-				attempts ++
-				if(attempts > 300) {
-					pending = false
-				}
+				rtn.vmRecord = serverDetail.vmRecord
+				rtn.vm = serverDetail.vm
+				rtn.vmId = serverDetail.vmId
+				rtn.vmDetails = serverDetail.vmDetails
+				rtn.volumes = serverDetail.volumes
+				rtn.networks = serverDetail.networks
 			}
 		} catch(e) {
-			log.error("An Exception in checkServerReady: ${e.message}",e)
+			log.error("An Exception in checkServerReady: ${e.message}", e)
 		}
 		return rtn
 	}

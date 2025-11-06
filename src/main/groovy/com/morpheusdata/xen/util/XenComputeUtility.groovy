@@ -1161,7 +1161,7 @@ class XenComputeUtility {
 					if(createResults.success == true) {
 						//upload it -
 						def srRecord = SR.getByUuid(opts.connection, opts.datastore.externalId)
-						def tgtUrl = getXenApiUrl(opts.zone, true) + '/import_raw_vdi?vdi=' + createResults.vdiId + '&format=vhd'
+						def tgtUrl = getXenApiUrl(opts.zone, true) + '/import_raw_vdi?vdi=' + createResults.vdiId
 						rtn.vdiId = createResults.vdiId
 						rtn.vdi = createResults.vdi
 						rtn.srRecord = srRecord

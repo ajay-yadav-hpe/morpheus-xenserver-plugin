@@ -39,7 +39,7 @@ class UpdateDataUtilSpec extends TestSpecBase {
 		stubServices(context)
 		stubAsync(context, [
 			workloadType: [
-				list    : { query -> { throw new RuntimeException('boom') }() },
+				list    : { query -> Observable.error(new RuntimeException('boom')) },
 				bulkSave: { List items -> Single.just(items) }
 			]
 		])
